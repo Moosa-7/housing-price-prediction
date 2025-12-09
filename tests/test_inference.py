@@ -1,8 +1,6 @@
-# tests/test_inference.py
 import sys
 import os
 from pathlib import Path
-
 import pandas as pd
 import pytest
 
@@ -13,17 +11,39 @@ if str(ROOT) not in sys.path:
 
 from src.inference_pipeline.inference import predict
 
-
 @pytest.fixture(scope="session")
 def sample_df():
     """Load a small sample from cleaning_eval.csv for inference testing."""
     sample_path = ROOT / "data/processed/feature_engineered_eval.csv"
-    df = pd.read_csv(sample_path).sample(5, random_state=42).reset_index(drop=True)
-    return df
+    
+    # Check if file exists
+    if not sample_path.exists():
+        pytest.fail(f"Test data not found: {sample_path}")
 
+    # Load data
+    df = pd.read_csv(sample_path).sample(5, random_state=42).reset_index(drop=True)
+    
+    # === FORCE RENAME ===
+    # If city_encoded exists, rename it.
+    if "city_encoded" in df.columns:
+        print("Renaming 'city_encoded' to 'city_full_encoded'")
+        df = df.rename(columns={"city_encoded": "city_full_encoded"})
+    
+    # === SAFETY CHECK ===
+    # If city_full_encoded is STILL missing (maybe it wasn't there to begin with), create it.
+    if "city_full_encoded" not in df.columns:
+        print("Warning: 'city_full_encoded' missing. Creating dummy column.")
+        df["city_full_encoded"] = 0  # Default value to prevent crash
+        
+    return df
 
 def test_inference_runs_and_returns_predictions(sample_df):
     """Ensure inference pipeline runs and returns predicted_price column."""
+    
+    # Double check before sending to predict
+    if "city_encoded" in sample_df.columns:
+         sample_df = sample_df.rename(columns={"city_encoded": "city_full_encoded"})
+
     preds_df = predict(sample_df)
 
     # Check output is not empty

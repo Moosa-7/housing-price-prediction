@@ -86,6 +86,19 @@ def predict(
 
     # Step 6: Load model & predict
     model = load(model_path)
+
+    # --- FIX: Align column names if mismatch occurs ---
+    if "city_encoded" in df.columns and "city_full_encoded" not in df.columns:
+        print("Renaming 'city_encoded' to 'city_full_encoded' for model compatibility.")
+        df = df.rename(columns={"city_encoded": "city_full_encoded"})
+        
+    # Also handle the reverse case (just to be safe)
+    if "city_full_encoded" in df.columns and "city_encoded" not in df.columns:
+         # Check if model expects the old name (rare, but possible)
+         if hasattr(model, "feature_names") and "city_encoded" in model.feature_names:
+             df = df.rename(columns={"city_full_encoded": "city_encoded"})
+    # --------------------------------------------------
+
     preds = model.predict(df)
 
     # Step 7: Build output
