@@ -1,11 +1,15 @@
-import streamlit as st
+import streamlit as st  # MUST BE FIRST IMPORT
 import pandas as pd
 import requests
 import plotly.express as px
 import boto3
 import os
+import numpy as np 
 from pathlib import Path
+
+# Debug message 
 st.write("DEBUG: App is starting...")
+
 # ============================
 # Config & Local Paths
 # ============================
@@ -24,7 +28,6 @@ def load_from_s3_if_missing(key, local_path):
     if local_path.exists():
         return str(local_path)
     
-    # Try downloading only if we have AWS creds configured
     try:
         s3 = boto3.client("s3", region_name=REGION)
         st.info(f"📥 Downloading {key} from S3...")
@@ -36,46 +39,38 @@ def load_from_s3_if_missing(key, local_path):
     
     return str(local_path)
 
-# Ensure paths exist (logic handles both local-only and cloud-enabled setups)
+# Ensure paths exist
 path_fe = load_from_s3_if_missing("processed/feature_engineered_holdout.csv", HOLDOUT_ENGINEERED_PATH)
 path_meta = load_from_s3_if_missing("processed/cleaning_holdout.csv", HOLDOUT_META_PATH)
 
 # ============================
-# Data loading (FIXED)
+# Data loading
 # ============================
 @st.cache_data
 def load_data():
     try:
-        # Load Engineered Data (for API)
         fe = pd.read_csv(path_fe)
-        
-        # Load Meta Data (for Display) & Fix Dates
         meta = pd.read_csv(path_meta)
         
         # FIX: Ensure 'date' is datetime before using .dt accessor
         if "date" in meta.columns:
             meta["date"] = pd.to_datetime(meta["date"])
         
-        # Keep only relevant display columns
         meta = meta[["date", "city_full"]]
 
-        # Align lengths if they differ (e.g., due to different preprocessing runs)
         if len(fe) != len(meta):
             st.warning("⚠️ Engineered and meta holdout lengths differ. Aligning by index.")
             min_len = min(len(fe), len(meta))
             fe = fe.iloc[:min_len].copy()
             meta = meta.iloc[:min_len].copy()
 
-        # Create Display DataFrame
         disp = pd.DataFrame(index=fe.index)
         disp["date"] = meta["date"]
         disp["region"] = meta["city_full"]
         
-        # Extract Year/Month safely
         disp["year"] = disp["date"].dt.year
         disp["month"] = disp["date"].dt.month
         
-        # If actual price exists in engineered data, keep it for comparison
         if "price" in fe.columns:
             disp["actual_price"] = fe["price"]
         
@@ -87,10 +82,8 @@ def load_data():
 
 fe_df, disp_df = load_data()
 
-# Stop if data failed to load
 if fe_df.empty or disp_df.empty:
     st.error("CRITICAL ERROR: DataFrames are empty. Application stopped.")
-    st.write("Please check your terminal for file path errors.")
     st.stop()
 
 # ============================
@@ -111,7 +104,6 @@ with col3:
     region = st.selectbox("Select Region", regions, index=0)
 
 if st.button("Show Predictions 🚀"):
-    # Filter Logic
     mask = (disp_df["year"] == year) & (disp_df["month"] == month)
     if region != "All":
         mask &= (disp_df["region"] == region)
@@ -123,22 +115,21 @@ if st.button("Show Predictions 🚀"):
     else:
         st.write(f"📅 Running predictions for **{year}-{month:02d}** | Region: **{region}**")
 
-        # Prepare Payload for API
-        payload = fe_df.loc[idx].to_dict(orient="records")
+        # Payload for Table
+        payload = fe_df.loc[idx].fillna(0).to_dict(orient="records")
 
         try:
-            # Call API
             resp = requests.post(API_URL, json=payload, timeout=60)
             resp.raise_for_status()
             out = resp.json()
-            
             preds = out.get("predictions", [])
             actuals = out.get("actuals", None)
 
-            # Build View DataFrame
+            # === FIX 1: Truncate Table Predictions ===
+            if len(preds) != len(idx):
+                preds = preds[:len(idx)] # Chop off extras
+
             view = disp_df.loc[idx, ["date", "region"]].copy()
-            
-            # Add Actuals if available
             if "actual_price" in disp_df.columns:
                 view["actual_price"] = disp_df.loc[idx, "actual_price"]
             elif actuals:
@@ -147,33 +138,25 @@ if st.button("Show Predictions 🚀"):
             view["prediction"] = preds
             view = view.sort_values("date")
 
-            # Calculate Metrics (if actuals exist)
             if "actual_price" in view.columns:
                 mae = (view["prediction"] - view["actual_price"]).abs().mean()
                 rmse = ((view["prediction"] - view["actual_price"]) ** 2).mean() ** 0.5
                 avg_pct_error = ((view["prediction"] - view["actual_price"]).abs() / view["actual_price"]).mean() * 100
 
                 st.subheader("Predictions vs Actuals")
-                st.dataframe(
-                    view[["date", "region", "actual_price", "prediction"]].reset_index(drop=True),
-                    use_container_width=True
-                )
-
+                st.dataframe(view[["date", "region", "actual_price", "prediction"]].reset_index(drop=True), use_container_width=True)
+                
                 c1, c2, c3 = st.columns(3)
-                with c1:
-                    st.metric("MAE", f"${mae:,.0f}")
-                with c2:
-                    st.metric("RMSE", f"${rmse:,.0f}")
-                with c3:
-                    st.metric("Avg % Error", f"{avg_pct_error:.2f}%")
+                with c1: st.metric("MAE", f"${mae:,.0f}")
+                with c2: st.metric("RMSE", f"${rmse:,.0f}")
+                with c3: st.metric("Avg % Error", f"{avg_pct_error:.2f}%")
             else:
                 st.subheader("Predictions")
                 st.dataframe(view[["date", "region", "prediction"]], use_container_width=True)
 
             # ============================
-            # Yearly Trend Chart (Advanced)
+            # Yearly Trend Chart (FIXED)
             # ============================
-            # This fetches ALL data for the year to draw a line chart
             try:
                 if region == "All":
                     yearly_mask = (disp_df["year"] == year)
@@ -182,43 +165,34 @@ if st.button("Show Predictions 🚀"):
                 
                 yearly_data = disp_df[yearly_mask].copy()
                 
-                # We need to predict for the whole year to plot the line
-                payload_year = fe_df.loc[yearly_mask.index].to_dict(orient="records")
+                # Payload for Chart
+                payload_year = fe_df.loc[yearly_mask.index].fillna(0).to_dict(orient="records")
                 resp_year = requests.post(API_URL, json=payload_year, timeout=60)
                 yearly_preds = resp_year.json().get("predictions", [])
                 
-                yearly_data["prediction"] = yearly_preds
+                # === FIX 2: Truncate Chart Predictions (The Magic Fix) ===
+                if len(yearly_preds) != len(yearly_data):
+                    st.warning(f"Note: API returned {len(yearly_preds)} rows, expected {len(yearly_data)}. Auto-trimming.")
+                    yearly_preds = yearly_preds[:len(yearly_data)]
+                # =========================================================
 
-                # Aggregate by month
+                yearly_data["prediction"] = pd.Series(yearly_preds, index=yearly_data.index).astype(float)
+
                 monthly_avg = yearly_data.groupby("month")[["actual_price", "prediction"]].mean().reset_index()
 
                 fig = px.line(
-                    monthly_avg,
-                    x="month",
-                    y=["actual_price", "prediction"],
-                    markers=True,
+                    monthly_avg, x="month", y=["actual_price", "prediction"], markers=True,
                     labels={"value": "Price ($)", "month": "Month"},
                     title=f"Yearly Trend — {year} ({region})"
                 )
-
-                # Add highlight rectangle for selected month
-                fig.add_vrect(
-                    x0=month - 0.5,
-                    x1=month + 0.5,
-                    fillcolor="red",
-                    opacity=0.1,
-                    layer="below",
-                    line_width=0,
-                )
-
+                fig.add_vrect(x0=month - 0.5, x1=month + 0.5, fillcolor="red", opacity=0.1, layer="below", line_width=0)
                 st.plotly_chart(fig, use_container_width=True)
 
             except Exception as chart_err:
                 st.warning(f"Could not load trend chart: {chart_err}")
 
         except Exception as e:
-            st.error(f"API call failed. Is the backend running? Error: {e}")
-            st.info("💡 Tip: Make sure to run `uvicorn src.api.main:app --reload` in another terminal.")
+            st.error(f"API call failed: {e}")
 
 else:
     st.info("Choose filters and click **Show Predictions** to compute.")

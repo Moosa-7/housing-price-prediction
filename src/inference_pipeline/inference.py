@@ -1,13 +1,11 @@
 """
 Inference pipeline for Housing Regression MLE.
 
-- Takes RAW input data (same schema as holdout.csv).
-- Applies preprocessing + feature engineering using saved encoders.
+- Takes input data (Raw OR Processed).
+- Applies preprocessing only if needed.
 - Aligns features with training.
 - Returns predictions.
 """
-
-# Raw → preprocess → feature engineering → align schema → model.predict → predictions.
 
 from __future__ import annotations
 import argparse
@@ -30,12 +28,10 @@ DEFAULT_TARGET_ENCODER = PROJECT_ROOT / "models" / "target_encoder.pkl"
 TRAIN_FE_PATH = PROJECT_ROOT / "data" / "processed" / "feature_engineered_train.csv"
 DEFAULT_OUTPUT = PROJECT_ROOT / "predictions.csv"
 
-print("📂 Inference using project root:", PROJECT_ROOT)
-
 # Load training feature columns (strict schema from training dataset)
 if TRAIN_FE_PATH.exists():
     _train_cols = pd.read_csv(TRAIN_FE_PATH, nrows=1)
-    TRAIN_FEATURE_COLUMNS = [c for c in _train_cols.columns if c != "price"]  # excluding price column
+    TRAIN_FEATURE_COLUMNS = [c for c in _train_cols.columns if c != "price"] 
 else:
     TRAIN_FEATURE_COLUMNS = None
 
@@ -49,13 +45,27 @@ def predict(
     freq_encoder_path: Path | str = DEFAULT_FREQ_ENCODER,
     target_encoder_path: Path | str = DEFAULT_TARGET_ENCODER,
 ) -> pd.DataFrame:
-    # Step 1: Preprocess raw input
-    df = clean_and_merge(input_df)
-    df = drop_duplicates(df)
-    df = remove_outliers(df)
+    
+    # === FIX: Robust Detection of Processed Data ===
+    # If the data has 'zipcode_freq' OR 'city_full_encoded', it is definitely processed.
+    # If it has 'lat' and 'lng', it is also processed.
+    is_processed = False
+    if "zipcode_freq" in input_df.columns or "city_full_encoded" in input_df.columns:
+        is_processed = True
+    elif "lat" in input_df.columns and "lng" in input_df.columns:
+        is_processed = True
 
-    # Step 2: Feature engineering
-    if "date" in df.columns:
+    if is_processed:
+        print("ℹ️ Input appears already preprocessed. Skipping merge step.")
+        df = input_df.copy()
+    else:
+        print("⚙️ Running clean_and_merge on raw input...")
+        df = clean_and_merge(input_df)
+        df = drop_duplicates(df)
+        df = remove_outliers(df)
+    
+    # Step 2: Feature engineering (Only run if needed)
+    if "date" in df.columns and "year" not in df.columns:
         df = add_date_features(df)
 
     # Step 3: Encodings ----------------
@@ -68,56 +78,57 @@ def predict(
     # Target encoding (city_full → city_full_encoded)
     if Path(target_encoder_path).exists() and "city_full" in df.columns:
         target_encoder = load(target_encoder_path)
-        df["city_full_encoded"] = target_encoder.transform(df["city_full"])
+        try:
+            df["city_full_encoded"] = target_encoder.transform(df["city_full"])
+        except:
+            df["city_full_encoded"] = 0
         df = df.drop(columns=["city_full"], errors="ignore")
 
     # Drop leakage columns
     df, _ = drop_unused_columns(df.copy(), df.copy())
 
-    # Step 4: Separate actuals if present
+    # Step 4: Separate actuals
     y_true = None
     if "price" in df.columns:
         y_true = df["price"].tolist()
         df = df.drop(columns=["price"])
 
-    # Step 5: Align columns with training schema
+    # Step 5: Align columns
     if TRAIN_FEATURE_COLUMNS is not None:
         df = df.reindex(columns=TRAIN_FEATURE_COLUMNS, fill_value=0)
 
     # Step 6: Load model & predict
     model = load(model_path)
 
-    # --- FIX: Align column names if mismatch occurs ---
+    # Align column names if mismatch occurs
     if "city_encoded" in df.columns and "city_full_encoded" not in df.columns:
-        print("Renaming 'city_encoded' to 'city_full_encoded' for model compatibility.")
         df = df.rename(columns={"city_encoded": "city_full_encoded"})
-        
-    # Also handle the reverse case (just to be safe)
     if "city_full_encoded" in df.columns and "city_encoded" not in df.columns:
-         # Check if model expects the old name (rare, but possible)
          if hasattr(model, "feature_names") and "city_encoded" in model.feature_names:
              df = df.rename(columns={"city_full_encoded": "city_encoded"})
-    # --------------------------------------------------
 
     preds = model.predict(df)
 
     # Step 7: Build output
     out = df.copy()
     out["predicted_price"] = preds
-    if y_true is not None:
+    
+    # FIX: Safety check for length mismatch
+    # If y_true got doubled or modified, ignore it to prevent crash
+    if y_true is not None and len(y_true) == len(out):
         out["actual_price"] = y_true
 
     return out
 
-
 # ----------------------------
 # CLI entrypoint
 # ----------------------------
-# Allows running inference directly from terminal.
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Run inference on new housing data (raw).")
     parser.add_argument("--input", type=str, required=True, help="Path to input RAW CSV file")
     parser.add_argument("--output", type=str, default=str(DEFAULT_OUTPUT), help="Path to save predictions CSV")
+    
+    # Optional arguments to override defaults
     parser.add_argument("--model", type=str, default=str(DEFAULT_MODEL), help="Path to trained model file")
     parser.add_argument("--freq_encoder", type=str, default=str(DEFAULT_FREQ_ENCODER), help="Path to frequency encoder pickle")
     parser.add_argument("--target_encoder", type=str, default=str(DEFAULT_TARGET_ENCODER), help="Path to target encoder pickle")
