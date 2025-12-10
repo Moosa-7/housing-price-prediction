@@ -2,7 +2,7 @@ name: Deploy to ECR
 
 on:
   push:
-    branches: [ "main" ] # Runs whenever you push to the main branch
+    branches: [ "main" ]
 
 jobs:
   build-and-push:
@@ -13,15 +13,16 @@ jobs:
     - name: Checkout code
       uses: actions/checkout@v4
 
-    # 2. Log in to AWS using the secrets you just added
+    # 2. Log in to AWS using your secrets
+    # I set region to eu-west-2 because your logs showed that is where your ECR is.
     - name: Configure AWS credentials
       uses: aws-actions/configure-aws-credentials@v4
       with:
         aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
         aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-        aws-region: ${{ secrets.AWS_REGION }}
+        aws-region: eu-west-2
 
-    # 3. Log in to Amazon ECR
+    # 3. Log in to Amazon ECR (This authenticates Docker)
     - name: Login to Amazon ECR
       id: login-ecr
       uses: aws-actions/amazon-ecr-login@v2
@@ -30,8 +31,7 @@ jobs:
     - name: Build, tag, and push image to Amazon ECR
       env:
         ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
-        # REPLACE 'my-repo-name' BELOW with the name you typed in AWS (e.g., lms-backend)
-        ECR_REPOSITORY: housing-api 
+        ECR_REPOSITORY: housing-api
         IMAGE_TAG: latest
       run: |
         docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG .
