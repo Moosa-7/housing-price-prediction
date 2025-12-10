@@ -31,7 +31,7 @@ jobs:
       env:
         ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
         # REPLACE 'my-repo-name' BELOW with the name you typed in AWS (e.g., lms-backend)
-        ECR_REPOSITORY: my-repo-name 
+        ECR_REPOSITORY: housing-api 
         IMAGE_TAG: latest
       run: |
         docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG .
