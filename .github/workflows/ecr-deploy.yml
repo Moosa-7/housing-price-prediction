@@ -13,8 +13,8 @@ jobs:
     - name: Checkout code
       uses: actions/checkout@v4
 
-    # 2. Log in to AWS using your secrets
-    # I set region to eu-west-2 because your logs showed that is where your ECR is.
+    # 2. Configure AWS Credentials
+    # CRITICAL FIX: I set the region to 'eu-west-2' because your logs show your ECR is in London.
     - name: Configure AWS credentials
       uses: aws-actions/configure-aws-credentials@v4
       with:
@@ -22,17 +22,17 @@ jobs:
         aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
         aws-region: eu-west-2
 
-    # 3. Log in to Amazon ECR (This authenticates Docker)
+    # 3. Login to Amazon ECR (This fixes "no basic auth credentials")
     - name: Login to Amazon ECR
       id: login-ecr
       uses: aws-actions/amazon-ecr-login@v2
 
-    # 4. Build, tag, and push the image to ECR
+    # 4. Build, tag, and push the image
     - name: Build, tag, and push image to Amazon ECR
       env:
         ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
         ECR_REPOSITORY: housing-api
-        IMAGE_TAG: latest
+        IMAGE_TAG: ${{ github.sha }}
       run: |
         docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG .
         docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
