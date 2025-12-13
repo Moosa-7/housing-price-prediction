@@ -1,7 +1,6 @@
 version: '3.8'
 
 services:
-  # 1. The Backend (API)
   housing-api:
     build:
       context: .
@@ -9,12 +8,14 @@ services:
     container_name: housing-api
     ports:
       - "8000:8000"
+    volumes:
+      # This mapping is CRITICAL. It lets the container see your local models folder.
+      # If you retrain a model locally, the container sees the update immediately!
+      - ./models:/app/models
     environment:
       - PYTHONPATH=/app
-    # This restarts the container if it crashes (good for debugging)
     restart: always
 
-  # 2. The Frontend (UI)
   housing-ui:
     build:
       context: .
@@ -23,8 +24,6 @@ services:
     ports:
       - "8501:8501"
     environment:
-      # INTERNAL DOCKER NETWORK:
-      # The UI talks to the API using the service name "housing-api", not "localhost"
-      - API_URL=http://housing-api:8000/predict
+      - API_URL=http://housing-api:8000
     depends_on:
       - housing-api
