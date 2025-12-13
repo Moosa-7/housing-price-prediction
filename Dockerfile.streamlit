@@ -1,21 +1,17 @@
 # Dockerfile.streamlit
 FROM python:3.11-slim
 
-# Set environment variables
-ENV PYTHONUNBUFFERED=1 \
-    PIP_NO_CACHE_DIR=1 \
-    UV_HTTP_TIMEOUT=1200
+ENV PIP_DEFAULT_TIMEOUT=1200 \
+    PYTHONUNBUFFERED=1
 
 WORKDIR /app
 
-# 1. Copy dependency files first
-COPY pyproject.toml uv.lock* ./
+# 1. Copy requirements
+COPY requirements.txt .
 
-# 2. Install 'uv' and dependencies
-# 2. Install 'uv' with a long timeout (1000 seconds)
-# We also keep the UV timeout env var we added earlier
-RUN pip install --default-timeout=1000 --no-cache-dir uv \
-    && uv pip install --system .
+# 2. Install dependencies
+RUN pip install --upgrade pip && \
+    pip install --no-cache-dir -r requirements.txt --retries 10
 
 # 3. Copy app code
 COPY . .
@@ -23,7 +19,6 @@ COPY . .
 # 4. Streamlit Config
 ENV STREAMLIT_SERVER_PORT=8501 \
     STREAMLIT_SERVER_ADDRESS=0.0.0.0 \
-    STREAMLIT_BROWSER_GATHERUSAGESTATS=false \
     API_URL=http://housing-api:8000
 
 EXPOSE 8501
