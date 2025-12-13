@@ -1,127 +1,86 @@
-# Goal: Create a FastAPI app to serve your trained ML model into a web service that anyone 
-# (or any system) can call over HTTP.
+from fastapi import FastAPI, HTTPException
+import pandas as pd
+import joblib
+import os
 
-from fastapi import FastAPI            # Web framework for APIs
-from pathlib import Path               # For handling file paths cleanly
-from typing import List, Dict, Any     # For type hints (clarity in endpoints)
-import pandas as pd                    # To handle incoming JSON as DataFrames
-import boto3, os                       # AWS SDK for Python + env variables
+app = FastAPI(title="Housing Intelligence API")
 
-# Import inference pipeline
-from src.inference_pipeline.inference import predict
+# Load Models Dictionary
+models = {}
 
-# ----------------------------
-# Config
-# ----------------------------
-S3_BUCKET = os.getenv("S3_BUCKET", "housing-regression-data")
-REGION = os.getenv("AWS_REGION", "eu-west-2")
-s3 = boto3.client("s3", region_name=REGION)
+@app.on_event("startup")
+def load_models():
+    """Load all models on startup to avoid loading delay per request"""
+    model_dir = "models"  # Ensure this matches your container path
+    try:
+        models["regression"] = joblib.load(f"{model_dir}/regression.joblib")
+        models["classification"] = joblib.load(f"{model_dir}/classification.joblib")
+        
+        # Spatial
+        models["clustering"] = joblib.load(f"{model_dir}/clustering.joblib")
+        models["scaler"] = joblib.load(f"{model_dir}/cluster_scaler.joblib")
+        models["recommender"] = joblib.load(f"{model_dir}/recommender.joblib")
+        models["rec_data"] = joblib.load(f"{model_dir}/rec_data.joblib")
+        
+        # Forecasting
+        models["forecaster"] = joblib.load(f"{model_dir}/forecasting.joblib")
+        print("✅ All Models Loaded Successfully")
+    except Exception as e:
+        print(f"⚠️ Warning: Some models failed to load. Error: {e}")
 
-# Ensures your app always has the latest model/data locally, 
-# but avoids re-downloading every time it starts.
-def load_from_s3(key, local_path):
-    """Download from S3 if not already cached locally."""
-    local_path = Path(local_path)
-    if not local_path.exists():
-        os.makedirs(local_path.parent, exist_ok=True)
-        print(f"📥 Downloading {key} from S3…")
-        s3.download_file(S3_BUCKET, key, str(local_path))
-    return str(local_path)
-
-# ----------------------------
-# Paths
-# ----------------------------
-# Downloads model + training features from S3 if not cached.
-MODEL_PATH = Path(load_from_s3("models/xgb_best_model.pkl", "models/xgb_best_model.pkl"))
-TRAIN_FE_PATH = Path(load_from_s3("processed/feature_engineered_train.csv", "data/processed/feature_engineered_train.csv"))
-
-# Load expected training features for alignment
-if TRAIN_FE_PATH.exists():
-    _train_cols = pd.read_csv(TRAIN_FE_PATH, nrows=1)
-    TRAIN_FEATURE_COLUMNS = [c for c in _train_cols.columns if c != "price"]
-else:
-    TRAIN_FEATURE_COLUMNS = None
-
-# ----------------------------
-# App
-# ----------------------------
-# Instantiates the FastAPI app.
-app = FastAPI(title="Housing Regression API")
-
-# / → simple landing endpoint to confirm API is alive.
 @app.get("/")
 def root():
-    return {"message": "Housing Regression API is running 🚀"}
+    return {"status": "Active", "features": ["predict", "classify", "segment", "recommend", "forecast"]}
 
-# /health → checks if model exists, returns status info (like expected feature count).
-@app.get("/health")
-def health():
-    status: Dict[str, Any] = {"model_path": str(MODEL_PATH)}
-    if not MODEL_PATH.exists():
-        status["status"] = "unhealthy"
-        status["error"] = "Model not found"
-    else:
-        status["status"] = "healthy"
-        if TRAIN_FEATURE_COLUMNS:
-            status["n_features_expected"] = len(TRAIN_FEATURE_COLUMNS)
-    return status
-
-# Prediction Endpoint: This is the core ML serving endpoint.
+# 1. Regression (Existing)
 @app.post("/predict")
-def predict_batch(data: List[dict]):
-    if not MODEL_PATH.exists():
-        return {"error": f"Model not found at {str(MODEL_PATH)}"}
-
+def predict_price(data: list[dict]):
     df = pd.DataFrame(data)
-    if df.empty:
-        return {"error": "No data provided"}
+    # Ensure you drop columns that weren't used in training if necessary
+    # For simplicity, assuming input matches training features exactly
+    pred = models["regression"].predict(df)
+    return {"predictions": pred.tolist()}
 
-    preds_df = predict(df, model_path=MODEL_PATH)
+# 2. Classification (New)
+@app.post("/classify")
+def classify_tier(data: list[dict]):
+    df = pd.DataFrame(data)
+    pred = models["classification"].predict(df)
+    return {"tiers": pred.tolist()}
 
-    resp = {"predictions": preds_df["predicted_price"].astype(float).tolist()}
-    if "actual_price" in preds_df.columns:
-        resp["actuals"] = preds_df["actual_price"].astype(float).tolist()
+# 3. Clustering (New)
+@app.post("/segment")
+def segment_neighborhood(data: list[dict]):
+    df = pd.DataFrame(data)
+    # Transform data using the saved scaler
+    X_scaled = models["scaler"].transform(df[['lat', 'lon', 'price']])
+    clusters = models["clustering"].predict(X_scaled)
+    return {"clusters": clusters.tolist()}
 
-    return resp
+# 4. Recommendation (New)
+@app.post("/recommend")
+def get_recommendations(data: list[dict]):
+    # Expects 1 row of input features
+    df = pd.DataFrame(data)
+    # Find nearest neighbors indices
+    distances, indices = models["recommender"].kneighbors(df)
+    
+    # Retrieve the actual house data from the saved dataset
+    # indices[0] contains the index numbers of the 5 closest houses
+    similar_houses = models["rec_data"].iloc[indices[0]]
+    
+    return similar_houses.fillna(0).to_dict(orient="records")
 
-# Batch runner
-from src.batch.run_monthly import run_monthly_predictions
-
-# Trigger a monthly batch job via API.
-@app.post("/run_batch")
-def run_batch():
-    preds = run_monthly_predictions()
-    return {
-        "status": "success",
-        "rows_predicted": int(len(preds)),
-        "output_dir": "data/predictions/"
-    }
-
-# Returns a preview of the most recent batch predictions.
-@app.get("/latest_predictions")
-def latest_predictions(limit: int = 5):
-    pred_dir = Path("data/predictions")
-    files = sorted(pred_dir.glob("preds_*.csv"))
-    if not files:
-        return {"error": "No predictions found"}
-
-    latest_file = files[-1]
-    df = pd.read_csv(latest_file)
-    return {
-        "file": latest_file.name,
-        "rows": int(len(df)),
-        "preview": df.head(limit).to_dict(orient="records")
-    }
-
-
-"""
-🔹 Execution Order / Module Flow
-
-1. Imports (FastAPI, pandas, boto3, your inference function).
-2. Config setup (env vars → bucket/region).
-3. S3 utility (load_from_s3).
-4. Download + load model/artifacts (MODEL_PATH, TRAIN_FE_PATH).
-5. Infer schema (TRAIN_FEATURE_COLUMNS).
-6. Create FastAPI app (app = FastAPI).
-7. Declare endpoints (/, /health, /predict, /run_batch, /latest_predictions).
-"""
+# 5. Forecasting (New)
+@app.get("/forecast/{months}")
+def forecast_market(months: int):
+    try:
+        # Forecast future steps
+        pred = models["forecaster"].forecast(steps=months)
+        
+        # Format for JSON (Date -> Price)
+        results = [{"date": str(d.date()), "price": round(v, 2)} 
+                   for d, v in zip(pred.index, pred.values)]
+        return {"forecast": results}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))

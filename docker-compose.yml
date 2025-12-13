@@ -1,0 +1,30 @@
+version: '3.8'
+
+services:
+  # 1. The Backend (API)
+  housing-api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: housing-api
+    ports:
+      - "8000:8000"
+    environment:
+      - PYTHONPATH=/app
+    # This restarts the container if it crashes (good for debugging)
+    restart: always
+
+  # 2. The Frontend (UI)
+  housing-ui:
+    build:
+      context: .
+      dockerfile: Dockerfile.streamlit
+    container_name: housing-ui
+    ports:
+      - "8501:8501"
+    environment:
+      # INTERNAL DOCKER NETWORK:
+      # The UI talks to the API using the service name "housing-api", not "localhost"
+      - API_URL=http://housing-api:8000/predict
+    depends_on:
+      - housing-api
